@@ -1,0 +1,552 @@
+---
+title: "Mac_Final_Project"
+author: "Jonathan Mac"
+date: "May 12, 2020"
+output:
+  word_document: default
+  html_document: default
+---
+```{r}
+
+#Load
+load("C:/Users/Jonathan Mac/Desktop/4550_Notes/Project_export/ARIMA_data/Stocks.RData")
+write.table(Stocks, file = "4550ProjectStockData.csv", sep=",", row.names = FALSE, col.names = TRUE)
+
+#Libraries
+library(forecast) # For Arima function
+library(astsa) # For acf2
+#install.packages('rugarch')
+library(rugarch) # For model fitting
+library(MASS) 
+#install.packages('EnvStats')
+library(EnvStats)
+library(MARSS)
+
+```
+
+
+# Introduction #
+
+**Background**
+The stocks dataset contains stock prices for 6 Tech giants, one of which I will analyze in this report. Apple is public company renowned for its iphone innovations, and has grown tremendously in the past decade. Its stock is an attractive equity investment with large trading volumes. Building a model to predict market movement based on historic data improves investing decisions in real time.
+
+```{r}
+apple = Stocks[,1] #use first time series, AAPL ticker for Apple stock
+plot(apple, main = "Apple Stock", ylab = "Price")
+```
+
+**Data at first look**
+Apple's stock data represents daily closing prices over a roughly 2 year period from 2017 to 2019. Markets operate only during business, so one typical week equals 5 trading days, and one year equals 251 trading days. All data is full and accurate, no missing values here. 
+
+I observe a steady, linear upward trend in Apple's stock price from 2017 to 2018.5. From 2018.5 to 2018.75, the price spikes but then drops abruptly until 2019 when it recovers. This reversal point in 2019 was either due to gravity toward fundamental market price or an external force helping the company recover after a crisis. 
+
+**Potential Models**
+In brief, this time series has choppy trends and erratic behavior, so its mean and standard deviation is non-zero, implying non-stationarity. The trends do not resemble a seasonal pattern either, as stock returns follow random movement. The non-stationarity and volatility clustering can be remedied by transformations (log, differencing). 
+
+Since stock returns are correlated, fitting an Autoregressive model helps capture the effects of past prices. I will include drift because of the apparent trends. Additionally, I will fit a Generalized Autoregressive Conditionally Heteroscedastic (GARCH) Model to account for the volatility clustering and non-stationarity of the data. 
+
+**Insights to look out for**
+Fitting a robust model can help:
+* forecast stock prices/returns into the near future
+* assess volatility during certain times, which helps risk-averse investors decide whether to sell their stake in Apple for safer investments. 
+* identify trends in stock prices/returns
+
+
+# Autoregressive Integrated Moving Average (ARIMA) Model #
+
+**Transforming Data**
+Taking the natural log of the stock prices helps smoothe our bumpy data. As a next step, I took the first difference of the log(price) to account for the linear upward/downward trends. No further differencing is needed because the trends in the graph, though choppy, have been mainly linear. Based on theory, the diff(log(price)) approximately represents the stock return. After transforming the data, the data doesn't look perfectly like white noise, but is much closer than without a first difference.   
+
+```{r}
+d_log_apple = diff(log(apple))
+plot(d_log_apple, main = "Apple Stock", ylab = "Diff(Log(Price))")
+```
+
+
+**Overview**
+The ARIMA(p,q) model can take many combinations of p and q, even solely pure AR(P) models (autoregressive; when q = 0) or pure MA models (Moving Average; when p = 0). Ultimately, the best model fit will be an ARIMA(2,1,2) model. The model specification is $x_{t}$ = $\phi_{1}$$x_{t-1}$ + $\phi_{2}$$x_{t-2}$ + $w_{t}$ + $\theta_{1}$$w_{t-1}$ + $\theta_{2}$$w_{t-2}$ 
+
+**Determining the order of ARIMA(p,q) model**
+
+The Autocorrelation and Partial Autocorrelation functions help determine the order of our models. 
+```{r}
+acf2(diff(apple),max.lag=30) 
+```
+
+As seen, the 7th lag goes above our both ACF/PACF cut-offs and may be significant. Potential models include all combinations of p = 1...7 and q = 1...7 for ARMA(p,q), AR(p), and MA(q).
+
+*Checking Information Criterion*
+
+One way to determine order (p,q) that yields the best fitting ARIMA model is through an Information Criterion. After implementing a for-loop and iterating through:
+
+* p = 1...7 for AR(p)
+* q = 1...7 for MA(q)
+* every combination of (p,q) from p = 1...7 and q = 1...7 for ARIMA(p,q)
+
+I obtained information criterion values which included AIC, AICC, and BIC for each model type and its order combinations. For each model type, I determined all 3 minimum information criterion (keft) and their respective model orders. 
+
+```{r}
+### AR Model - consider all orders p from 1 to 7 ###
+p=7
+
+#store information criteria values
+ARaic = rep(NA,7)
+ARaicc = rep(NA,7)
+ARbic = rep(NA,7)
+
+#append
+for (p in 1:7) {
+  fitAR = Arima(log(apple), order=c(p,1,0), method='ML') 
+  ARaic[p] = fitAR$aic
+  ARaicc[p] = fitAR$aicc
+  ARbic[p] = fitAR$bic
+}
+
+
+### MA Model - consider all orders q from 1 to 7 ###
+q=7
+
+#store information criteria values
+MAaic = rep(NA,7)
+MAaicc = rep(NA,7)
+MAbic = rep(NA,7)
+
+#append
+for (q in 1:7) {
+  fitMA = Arima(log(apple), order=c(0,1,q), method='ML') 
+  MAaic[q] = fitMA$aic
+  MAaicc[q] = fitMA$aicc
+  MAbic[q] = fitMA$bic
+}
+
+
+### ARMA(p,q) model ###
+# I'm curious about ARMA Model - consider all orders p and q from 1 to 7 #
+p=7
+q=7
+
+#store information criteria values
+ARMAaic = matrix(0, nrow=p, ncol=q, byrow=TRUE) #row p represents ARMA(p,1,q)
+ARMAaicc = matrix(0, nrow=p, ncol=q, byrow=TRUE)
+ARMAbic = matrix(0, nrow=p, ncol=q, byrow=TRUE)
+
+#append
+for (p in 1:7) { #p
+  
+  for (q in 1:7) { #q
+    
+    fitARMA = Arima(log(apple), order=c(p,1,q), method='ML') 
+  
+    ARMAaic[p,q] = fitARMA$aic
+  
+    ARMAaicc[p,q] = fitARMA$aicc
+  
+    ARMAbic[p,q] = fitARMA$bic
+  
+  }
+  
+}
+
+
+
+### Model Choice - Choose model with lowest information criteria ###
+
+min(ARaic) #highest
+min(MAaic) #Second Lowest
+min(ARMAaic) #Lowest value (most negative value)
+
+min(ARaicc) #Highest
+min(MAaicc) #Second Lowest
+min(ARMAaicc) #Lowest value (most negative value)
+
+min(ARbic) #Second lowest
+min(MAbic) #Lowest value (most negative value)
+min(ARMAbic) #Highest
+
+
+
+### which orders for each model have lowest information criterion? ###
+#AR(p)
+which(min(ARaic)==ARaic) #1
+which(min(ARaicc)==ARaicc) #1
+which(min(ARbic)==ARbic) #1
+
+#AR(1)
+AR1 = Arima(log(apple), order=c(0,1,1), method='ML') 
+
+
+
+#MA(q)
+which(min(MAaic)==MAaic) #1
+which(min(min(MAaicc))==MAaicc) #1
+which(min(MAbic)==MAbic) #1
+
+#MA(1)
+MA1 = Arima(log(apple), order=c(0,1,1), method='ML') 
+
+
+
+#ARMA(p)
+which(min(ARMAaic)==ARMAaic) #9, corresponding to 9th entry, or (2nd row, 2nd col)
+which(min(ARMAaicc)==ARMAaicc) #9, corresponding to 9th entry, or (2nd row, 2nd col)
+which(min(ARMAbic)==ARMAbic) #1
+
+##ARMA(2,2)
+ARMA22 = Arima(log(apple), order=c(2,1,2), method='ML') 
+ARMA22 #has lowest AIC and AICC values
+
+```
+
+The ARMA(2,2) model has the lowest AIC and AICC values, while the MA(1) model has the lowest BIC value. The reason is that BIC favors sparser models by more heavily penalizing models with a greater number of parameters. The ARMA(2,2) model wins by majority vote since two of its three information criterion values are lowest.
+
+
+**Parameters of ARIMA(2,1,2) Model**
+```{r}
+n = length(apple)
+
+ARMA202 = Arima(diff((log(apple)))[1:(n-59)], order=c(2,0,2), method='ML', include.constant=TRUE)  
+ARMA202
+```
+Drift = 5e-04 represents the mean daily return. So the mean annual return (1 year has 251 trading days) is 5e-04*251 = 0.1255 or 12.55%. This is a credible because a major index like the dow jones averages a 10% annual return. Apple is an elite growth company with a history of superior returns based on the past decade of data. So a 12.55% annual return estimate from two years of data is reasonable. 
+
+AR coefficients ar1 = 0.920  and ar2 = -0.9895 imply that yesterday's stock price positively influences today's, but stock price two days ago negatively influences today's price. Optimism is contagious, so it makes sense that yesterday's bull run promotes a positive outlook on the stock today. And the vice versa holds for a bearish scenario.
+
+But the negative ar2 term is harder to speculate, just like the positive-negative pair for ma1 = -0.9375 and ma2 = 0.9861. Nonetheless, this confirms the notion that markets are truly random, and models can't always accurately explain trading behvaior or predict movements.
+
+**Forecast**
+```{r}
+
+### Forecast of price and returns###
+n = length(apple)
+
+#price
+ARIMA202 = Arima(apple[1:(n-59)], order=c(2,0,2), method='ML', include.constant=TRUE) 
+fcARIMA202 = forecast(ARIMA202,h=59)
+plot(fcARIMA202)
+
+#returns (diff(log(price)))
+ARIMA212 = Arima(diff((log(apple)))[1:(n-59)], order=c(2,0,2), method='ML', include.constant=TRUE) 
+fcARIMA212 = forecast(ARIMA212,h=59)
+plot(fcARIMA212)
+
+### MSE of returns only ###
+MSE = (1/59)*sum((fcARIMA212$mean - diff(log(apple))[(n-59):(n-1)])^2) #forecasted values - observed
+MSE
+```
+
+Investors react to earnings announcements, which occur quarterly or every 3 months. So it's sensible to forecast prices for each quarter, which has 60 days. I remove one day for the next earnings announcement. I plot the forecasts of price and returns (diff(log(price))), on the left and right respectively.
+
+The forecasts doesn't answer all our initial questions. For instance, price (on the left) does forecast an upward trend, but not volatility. The blue area represents the 95% confidence level forecast, which is round and expands infinitely. Stock prices will be difficult to predict with a pure ARMA model because of such a wide interval.This means that the ARMA model predicts prices poorly the lengthier the forecast, which makes sense because the ARIMA model doesn't forecast volatility. Additionally, forecasted returns (on the right) narrowly oscillates slightly above 0%, but the blue area is sizably larger indicating huge volatility. With just an ARIMA model, analysts will never know during which periods will be most risky.
+
+
+I removed the last 59 observations to test the prediction accuracy of the ARIMA(2,1,2) model. The mean squared error (MSE) calculated with the 59 forecasted values and the last 59 observations was 0.0002525792, or .02525%. This means the ARIMA model forecasts daily returns that are off on average by .02525%. Though the expected error (MSE) is very minute, the volatility is wild, so this ARIMA(2,1,2) model has a lot of short-comings.
+
+
+
+
+
+
+
+# Generalized Autoregressive Conditionally Heteroscedastic (GARCH) Model #
+
+**Overview**
+The GARCH model will help model non-stationary nature of Apple's stock time series by capturing and accounting for the periods of fluctuating volatility. I will fit a GARCH(1,1) model with specification $\sigma_{t}^{2}$ = $\alpha_{0}$ + $\alpha_{1}$$x_{t-1}^{2}$ + $\beta_{1}$ $\sigma_{t-1}^{2}$.
+
+Fitting an AR(1) model, $x_{t}$ - $\mu$ = $\phi_{1}$($x_{t-1}$ - $\mu$) + $w_{t}$, is also helpful because stock prices are correlated and exhibit trend behavior. Previously, I differenced the log of the stock data to account for several linear trends, so I will include a drift component in the AR(1) model. My final model combines AR(1) + GARCH(1,1). 
+
+**Model Fit**
+Below, I check the qqPlot to assess the model fit of **AR(1) + GARCH(1,1)**. The tails stray away from our normality line, indicating heavier tails. Instead of a normal distribution, Student's t distribution may yield a better fit. 
+
+```{r, echo = FALSE}
+spec <- ugarchspec( 
+  mean.model = list(armaOrder = c(1, 0), include.mean = TRUE),
+  # "sGARCH" is the usual GARCH model we defined:
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  # We assume a normal model for e_t: 
+  distribution.model="norm"
+)
+
+# fit
+fit <- ugarchfit(spec=spec, data = d_log_apple, out.sample = 59)
+
+# plot
+#par(mfrow = c(1, 3))
+plot(fit, which = 9)
+```
+
+Below, I plot the qqplot of my AR(1) + GARCH(1,1) model under the student's t distribution, with an estimated 4 degrees of freedom. The sample quantiles near the tails fit much better, so I will AR(1) + GARCH(1,1) with Student's t distribution. 
+
+```{r, echo = FALSE}
+ehat <- as.numeric(residuals(fit, standardize=TRUE))
+#fitdistr(x=ehat, densfun='t') 
+qqPlot(x=ehat, distribution='t', 
+       param.list=list(df=4), add.line=TRUE)
+```
+
+```{r, echo = FALSE, eval = FALSE}
+# AR(1) + GARCH(1,1) with student's t distribution
+
+spec_t <- ugarchspec(
+
+
+# plot
+plot(fit_t, which = 9) #normality is good
+```
+
+```{r, echo = FALSE, eval = FALSE}
+# Check AIC/BIC for GARCH(5,5) case
+# AR(1) + GARCH(5,5) with student's t distribution
+
+#try for GARCH(2,2), GARCH(3,3), GARCH(4,4), GARCH(5,5)
+spec_t1 <- ugarchspec(
+  mean.model = list(armaOrder = c(1, 0), include.mean = TRUE),
+  variance.model = list(model = "sGARCH", garchOrder = c(4, 4)),
+  distribution.model="std"
+)
+
+fit_t1 <- ugarchfit(spec=spec_t1, data = d_log_apple, out.sample = 59)
+fit_t1
+
+# plot
+plot(fit_t1, which = 9) #normality is good
+```
+
+
+**Checking Information Criterion**
+*AR(1) + GARCH(1,1)*
+Akaike       -5.6238
+Bayes        -5.5822
+
+*AR(1) + GARCH(1,1) with student's t distribution*
+Akaike       -5.8015
+Bayes        -5.7515
+
+The AIC and BIC values are lower in the Student t distribution case, indicating that Student's t distribution is a more appropriate assumption than that of a normal distribution.
+
+**What about other orders AR(p) and GARCH(p,q)?**
+Another way to determine the order of the GARCH(p,q) is to plot the ACF/PACF of the squared transformed data, and determine the significant lags. As shown below, there might be some activity at lag = 5 for bot ACF/PACF.  
+
+```{r, echo = FALSE}
+sq_d_log_apple = d_log_apple^2 #to obtain GARCH(p,q) order
+acf2(sq_d_log_apple,max.lag=30)
+```
+
+So GARCH(5,5) might work too, but let's compare its information criteria with that of GARCH(1,1), both under student t distribution. 
+
+
+*AR(1) + GARCH(5,5) with student's t distribution*
+Akaike       -5.6238
+Bayes        -5.5822
+
+*AR(1) + GARCH(1,1) with student's t distribution*
+Akaike       -5.8916
+Bayes        -5.7695
+
+The GARCH(1,1) is still a superior fit since its AIC and BIC values are lower.
+
+
+
+**Parameters of AR(1) + GARCH(1,1) Model**
+
+Let's interpret the parameters from our model specification $\sigma_{t}^{2}$ = $\alpha_{0}$ + $\alpha_{1}$$x_{t-1}^{2}$ + $\beta_{1}$$\sigma_{t-1}^{2}$. 
+
+mu = 0.001254 represents the daily mean return. So the annual mean would be 0.001254*251 = 0.314754, or 31.47%. This makes sense because 10 years ago, Apple stock was $30. Currently, it's almost $300. So this ~30% return is a reasonable estimate just based on two years of data. The p-value of mu is .007 which is less than our 5% confidence level, indicating that this mu is significant. 
+
+beta1 = 0.789986 is the coefficient of the variance lag terms such as $\sigma_{t-1}^{2}$. Since beta1 is near 1, the volatility of the first lag heavily influences that of the next. The p-value of nearly 0 also indicates signifiance that there are trailing periods of volatilties, so stock volatility is influenced by fluctuations in the past. 
+
+*Optimal Parameters*
+------------------------------------
+        Estimate  Std. Error  t value Pr(>|t|)
+mu      0.001254    0.000471  2.66112 0.007788
+ar1     0.008114    0.045276  0.17922 0.857767
+omega   0.000017    0.000007  2.38113 0.017260
+alpha1  0.209014    0.067696  3.08754 0.002018
+beta1   0.789986    0.067283 11.74125 0.000000
+shape   3.120591    0.519188  6.01052 0.000000
+
+
+**Forecasting** 
+I perform a rolling forecast, which predicts 1-step-ahead incrementally while incorporating new information until n-steps are done. Consistent with my previous logic, I decide to forecast 59 trading days into the future because investor sentiment changes for every quarterly earnings announcement which is 3 months or 60 trading days. Below are forecasts of the data and $\sigma_{t}$
+
+```{r, echo = FALSE}
+### forecast AR(1) + GARCH(1,1) model under Student's t distribution ###
+spec_t <- ugarchspec(
+  mean.model = list(armaOrder = c(1, 0), include.mean = TRUE),
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  distribution.model="std"
+)
+
+fit_t <- ugarchfit(spec=spec_t, data = d_log_apple, out.sample = 59)
+
+fc <- ugarchforecast(fitORspec=fit_t, n.ahead = 59, n.roll=10)
+#plot(fc)
+plot(fc,which=2)
+plot(fc,which=4)
+
+#forecast values
+sig <- sigma(fc)[,11] #11th column is rolling forecast
+mu <- fitted(fc)[,11] 
+
+#confidence bounds
+ub <- quantile(fc, probs=.975) [,11]
+lb <- quantile(fc, probs=.0275) [,11]
+
+#proportion outside confidence interval area?
+y=apple[(length(apple)-58):length(apple)] #59 steps, but 58 bc inclusive
+mean( y > lb & y < ub)
+
+
+#MSE 
+fpm(fc, summary=TRUE)[,11] #no need to hand calculate, this does the job
+```
+
+The 2-Sigma bands imply a 95% confidence level. The confidence bands shaded in yellow capture the actual last 59 days almost perfectly, except for miniscule parts of the upward spikes at the beginning of June, and beginning/mid-way in July. They now even forecast clusters of volatility, thanks to GARCH model. Earnings announcement happens in June when volatility is relatively stable, indicating that Apple's performance probably met investor's expectations. Otherwise, volatility would have increased then because of surpassed or lackluster expectations. 
+
+The rolling forecast of the $\sigma_{t}$ shows that our AR(1) + GARCH(1,1) was less volatile than the $\sigma_{t}$ of the series. This indicates that our model is more conservative about the volatility of the stocks. A meaningful interpretation of this is that Wall Street Analysts can pitch Apple as a stable stock investment because this model still forecasts prices fairly well. On the other hand, an over estimated $\sigma_{t}$ would negatively impact Apple's image because its stock would be considered more risky than it actually is. It would make sense for analysts to stick with the more conservative model for recommendations.
+
+
+
+#State Space Model#
+
+Content is written in report because RMD couldn't knit at this point (overflow)
+
+$x_{t}$ = $\phi$$x_{t-1}$ + $w_{t}$
+
+$y_{t}$ = $A_{t}$$x_{t}$ + $v_{t}$
+
+```{r, echo = FALSE}
+plot(Stocks)
+
+### STATE SPACE MODEL ###
+y <- t(rbind(diff(log(Stocks))[-510:-568,], matrix(rep(NA, 59*6), nrow=59))) #510 bc inclusive
+#make diff(log(Stocks))[-510:-568,] to calculate MSE in terms of returns
+#make Stocks[-510:-568,] to forecast and get a nice graph of price trend
+
+# B in MARSS notation is equivalent to Phi in our notation. 
+Bvec <- c('phi11', 'phi21', 'phi31','phi41','phi51','phi61', 
+          'phi12', 'phi22', 'phi32','phi42','phi52','phi62',  
+          'phi13', 'phi23', 'phi33','phi43','phi53','phi63', 
+          'phi14', 'phi24', 'phi34','phi44','phi54','phi64', 
+          'phi15', 'phi25', 'phi35','phi45','phi55','phi65', 
+          'phi16', 'phi26', 'phi36','phi46','phi56','phi66')
+B <- matrix(data = Bvec, nrow = 6, ncol= 6)
+
+# Z in MARSS notation is equivalent to A in our notation. 
+
+Zvec <- c(1,0,0,0,0,0, 
+          0,1,0,0,0,0, 
+          0,0,1,0,0,0,
+          0,0,0,1,0,0,
+          0,0,0,0,1,0,
+          0,0,0,0,0,1)
+Z <- matrix(Zvec, 6, 6)
+
+# Q in MARSS notation is equivalent to Q in our notation. 
+# Remember that Q is symmetric. 
+Qvec <- c('q11', 'q12', 'q13', 'q14', 'q15', 'q16',
+          'q12', 'q22', 'q23','q24', 'q25', 'q26', 
+          'q13', 'q23', 'q33','q34', 'q35', 'q36',
+          'q14', 'q24', 'q34','q44', 'q45', 'q46',
+          'q15', 'q25', 'q35','q45', 'q55', 'q56',
+          'q16', 'q26', 'q36','q46', 'q56', 'q66')
+
+Q <- matrix(Qvec, 6, 6)
+
+# R in MARSS notation is equivalent to R in our notation. 
+# Remember that Q is symmetric. 
+Rvec <- c('r11', 'r12', 'r13', 'r14', 'r15', 'r16',
+          'r12', 'r22', 'r23','r24', 'r25', 'r26', 
+          'r13', 'r23', 'r33','r34', 'r35', 'r36',
+          'r14', 'r24', 'r34','r44', 'r45', 'r46',
+          'r15', 'r25', 'r35','r45', 'r55', 'r56',
+          'r16', 'r26', 'r36','r46', 'r56', 'r66')
+R <- matrix(Rvec, 6, 6)
+
+
+# In MARSS notation, u is a drift or intercept parameter. 
+# In our notation, this would be included via the set of 
+# exogenous variables.
+
+Uvec <- c(0, 0, 0,0,0,0)
+U = matrix(Uvec, 6, 1)
+
+# In MARSS notation, a is an intercept parameter. 
+# In our notation, this would be included via the set of 
+# exogenous variables.
+
+Avec <- c(0, 0, 0,0,0,0)
+A = matrix(Avec, 6, 1)
+
+# We put all these together in a list: 
+
+model.list <- list(B=B,U=U,A=A,Q=Q,Z=Z,R=R,tinitx=0)
+
+# tinitx=0 tells MARSS how we're doing the indexing.
+
+# We fit the models. 
+# First we use the EM algorithm, but this doesn't converge. 
+# If the EM algorithm doesn't converge, we pass the non-converged 
+# estimates into the BFGS algorithm as initial values. 
+
+fit_kem <- MARSS(y=y, model=model.list, method='kem', control=list(minit=2, maxit=2))
+
+fit_bfgs_with_kem <- MARSS(y=y, model=model.list, method = "BFGS", 
+                           inits = fit_kem)
+
+
+### CONFIDENCE INTERVALS ###
+MARSSparamCIs(fit_bfgs_with_kem)
+
+### PLOTS ###
+plot(fit_bfgs_with_kem)
+
+
+### MSE - only meaningful in terms of returns###
+#SO if not yet alrdy, go back and change Stocks to diff(log(Stocks))
+
+#check out what diff(c(1,2,4,3)) does to understand manipulations below
+y_obs = diff(log(apple))[(length(apple)-59):(length(apple)-1)] #=
+y_hat = fit_bfgs_with_kem$ytT[(length(apple)-58):length(apple)] #MARSS clumps all obs Yt tog, not seperated into columns
+
+
+MSE = (1/58)*sum((y_obs - y_hat)^2) #58 instead of 59 bc differencing in beginning takes 1 off
+MSE
+
+```
+
+# Model Comparison #
+
+**Qualitatively**
+The ARIMA model with drift assumes that the transformed data is stationary and roughly standard normal, which doesn't hold because of the clusters of volatility. Thus, the AR + GARCH model with a trend component better fits the data because it accounts for a non-constant standard deviation. The GARCH model relaxes the assumption of normality unlike the ARIMA model, and is made to fit non-stationary times series.  
+
+The forecast of the GARCH is more profound than the ARIMA's. The ARIMA forecasted prices but its volatility, indicated by the wide round blue regions, was increasingly infinite. The AR + GARCH forecast forecasted $\sigma_{t}$ so its confidence band areas shrank and expanded instead of constantly increasing. It accurately predicted the periods of more volatile fluctuations, which the ARIMA model failed to do. This provides analysts more information about apple's periods of volatility, helping investors better time and predict the market.
+
+
+**Quantitatively**
+I analyzed two models: ARMA(2,2) and AR(1) + GARCH(1,1). To make a fair comparison, I fit an ARMA(2,2) + GARCH(1,1) under a Student's t distribution. The information criterion below show that the order of AR(1) + GARCH(1,1) model is superior, supported by the lower AIC and BIC values. 
+
+*AR(1) + GARCH(1,1) with student's t distribution*
+Akaike       -5.8916
+Bayes        -5.7695
+
+*ARMA(2,2) + GARCH(1,1) with student's t distribution*
+Akaike       -5.8799
+Bayes        -5.7316
+
+One takeaway here is that even though a particular order (p=2,q=2) is optimal in a pure ARMA model, combining another model such as the GARCH(1,1) affects the order of original pure model. 
+
+```{r}
+#ARMA(2,2) + GARCH(5,5) with student's t distribution
+new_spec_t <- ugarchspec(
+  mean.model = list(armaOrder = c(2, 2), include.mean = TRUE),
+  variance.model = list(model = "sGARCH", garchOrder = c(5, 5)),
+  distribution.model="std"
+)
+
+#ARMA(1) + GARCH(1,1) with student's t distribution
+new_fit_t <- ugarchfit(spec=new_spec_t, data = d_log_apple, out.sample = 89)
+new_fit_t
+
+
+```
+
